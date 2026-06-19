@@ -1,0 +1,63 @@
+{
+  "name": "generate_media",
+  "description": "Generate a media asset (image, video, or audio) from a text prompt and return a reference to the resulting file. Use this when the user asks to create, draw, render, or synthesize visual or audio content rather than describe it in words.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "media_type": {
+        "type": "string",
+        "enum": ["image", "video", "audio"],
+        "description": "The kind of media to generate."
+      },
+      "prompt": {
+        "type": "string",
+        "description": "Natural-language description of the desired output."
+      },
+      "negative_prompt": {
+        "type": "string",
+        "description": "Elements to avoid in the generated output."
+      },
+      "format": {
+        "type": "string",
+        "enum": ["png", "jpeg", "webp", "mp4", "webm", "mp3", "wav"],
+        "description": "Output file format. Must be compatible with media_type (e.g. png/jpeg/webp for image, mp4/webm for video, mp3/wav for audio)."
+      },
+      "width": {
+        "type": "integer",
+        "minimum": 64,
+        "maximum": 4096,
+        "description": "Output width in pixels. Applies to image and video media_type only."
+      },
+      "height": {
+        "type": "integer",
+        "minimum": 64,
+        "maximum": 4096,
+        "description": "Output height in pixels. Applies to image and video media_type only."
+      },
+      "duration_seconds": {
+        "type": "number",
+        "minimum": 0.5,
+        "maximum": 120,
+        "description": "Output duration in seconds. Applies to video and audio media_type only."
+      },
+      "seed": {
+        "type": "integer",
+        "description": "Deterministic seed for reproducible generation. Omit for random output."
+      },
+      "quality": {
+        "type": "string",
+        "enum": ["draft", "standard", "high"],
+        "description": "Quality/fidelity tier. Higher quality generally costs more and takes longer."
+      },
+      "count": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 4,
+        "description": "Number of variations to generate in one call."
+      }
+    },
+    "required": ["media_type", "prompt", "format"],
+    "additionalProperties": false
+  },
+  "strict": true
+}
