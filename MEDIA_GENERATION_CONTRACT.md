@@ -81,6 +81,56 @@ retry with adjusted parameters:
 | `duration_seconds` | number | Present for video/audio assets.            |
 | `seed`     | int    | Seed actually used, for reproducibility.             |
 
+### Usage object (optional — metered/monetized executors)
+
+Executors that charge for generation SHOULD include a `usage` object in the
+success payload so Claude can tell the user where they stand:
+
+```json
+{
+  "status": "success",
+  "assets": [ ... ],
+  "usage": { "credits_charged": 1, "credits_remaining": 41, "plan": "pro" }
+}
+```
+
+| Field               | Type          | Notes                                          |
+| ------------------- | ------------- | ----------------------------------------------- |
+| `credits_charged`   | int           | Credits consumed by this call.                  |
+| `credits_remaining` | int or null   | Credits left in the current period; `null` = unlimited. |
+| `plan`              | string        | Billing tier the request executed under.        |
+
+### Structured errors (recommended)
+
+Plain-text `is_error` results remain valid, but executors SHOULD return a
+structured JSON error so Claude can react precisely — retry with different
+parameters, or direct the user to upgrade:
+
+```json
+{
+  "type": "tool_result",
+  "tool_use_id": "toolu_01ABC...",
+  "is_error": true,
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"status\":\"error\",\"code\":\"quota_exceeded\",\"message\":\"Monthly generation limit reached (5/5 used).\",\"upgrade_url\":\"https://app.example.com/pricing\"}"
+    }
+  ]
+}
+```
+
+| `code`            | Meaning                                    | Claude's expected reaction               |
+| ----------------- | ------------------------------------------ | ----------------------------------------- |
+| `invalid_request` | Bad parameter combination.                 | Correct the parameters and retry.         |
+| `content_policy`  | Prompt rejected by the provider's policy.  | Rephrase or inform the user.              |
+| `quota_exceeded`  | Billing quota exhausted.                   | Do not retry; tell the user to upgrade at `upgrade_url`. |
+| `timeout`         | Generation exceeded the executor timeout.  | Retry with lower `quality`/`duration_seconds`, or inform the user. |
+| `provider_error`  | Upstream generation service failed.        | Retry once, then inform the user.         |
+
+`upgrade_url` is only meaningful with `quota_exceeded`; other fields may be
+added by executors as long as `status`, `code`, and `message` are present.
+
 ## End-to-end example (Python)
 
 Claude may emit several `tool_use` blocks in one response (e.g. an image and
