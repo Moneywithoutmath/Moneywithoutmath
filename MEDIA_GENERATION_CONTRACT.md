@@ -113,7 +113,9 @@ def generate_media(input: dict) -> dict:
 
 messages = [{"role": "user", "content": "Generate a 1024x1024 png of a lighthouse at sunset."}]
 
-while True:
+MAX_TOOL_ITERATIONS = 5  # bound the loop: generation calls cost real money
+
+for _ in range(MAX_TOOL_ITERATIONS + 1):
     response = client.messages.create(
         model="claude-opus-4-8",
         max_tokens=16000,
@@ -148,3 +150,37 @@ while True:
 final_text = next((b.text for b in response.content if b.type == "text"), "")
 print(final_text)
 ```
+
+## Implementation guidance
+
+The contract is deliberately synchronous: one `tool_use` in, one
+`tool_result` out. Implementers should account for the following limitations:
+
+- **Timeouts.** Generation (especially video) can take minutes. Put a
+  timeout on the call to the generation service (120s is a reasonable
+  default) and return the timeout as an `is_error` result so Claude can
+  lower `quality`, shorten `duration_seconds`, or tell the user. Jobs that
+  routinely exceed a practical timeout need an async job/polling API, which
+  is out of scope for this contract.
+- **Bound the tool-use loop.** Claude may retry after errors or generate
+  several variations. Cap iterations (see `MAX_TOOL_ITERATIONS` above) so a
+  pathological conversation cannot run up generation and token costs.
+- **Cross-field validation is the executor's job.** JSON Schema alone cannot
+  express the `media_type`/`format` pairing or which dimensions apply, so
+  validate before dispatching and reject bad combinations with an `is_error`
+  result naming the allowed values — Claude will correct and retry.
+- **Keep execution server-side.** The generation service URL and API key
+  belong on a server (or edge function), never in client-side code.
+
+## Reference integrations
+
+- `morphic-ai-answer-engine-generative-ui` — `lib/tools/media-generation.ts`
+  exposes the contract as a Vercel AI SDK tool on the researcher agent,
+  activated when `MEDIA_GENERATION_API_URL` is configured.
+- `creator-commerce-hub` — `supabase/functions/generate-media/index.ts` runs
+  this contract's tool-use loop end-to-end behind an HTTP endpoint, with a
+  typed client in `src/lib/generate-media.ts`.
+
+Both forward the tool input unchanged to a backend that accepts the request
+JSON and responds with the asset payload described above, so one
+contract-compliant service can serve every integration.
