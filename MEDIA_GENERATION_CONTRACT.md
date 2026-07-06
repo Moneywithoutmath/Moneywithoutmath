@@ -83,6 +83,11 @@ retry with adjusted parameters:
 
 ## End-to-end example (Python)
 
+Claude may emit several `tool_use` blocks in one response (e.g. an image and
+an audio track for the same scene); every matching `tool_result` must be
+returned together in a single user message. The loop below handles that and
+keeps calling the API until Claude finishes with a normal text response.
+
 ```python
 import json
 from anthropic import Anthropic
@@ -108,23 +113,38 @@ def generate_media(input: dict) -> dict:
 
 messages = [{"role": "user", "content": "Generate a 1024x1024 png of a lighthouse at sunset."}]
 
-response = client.messages.create(
-    model="claude-opus-4-8",
-    max_tokens=1024,
-    tools=[media_tool],
-    messages=messages,
-)
+while True:
+    response = client.messages.create(
+        model="claude-opus-4-8",
+        max_tokens=16000,
+        tools=[media_tool],
+        messages=messages,
+    )
 
-for block in response.content:
-    if block.type == "tool_use" and block.name == "generate_media":
-        result = generate_media(block.input)
-        messages.append({"role": "assistant", "content": response.content})
-        messages.append({
-            "role": "user",
-            "content": [{
-                "type": "tool_result",
-                "tool_use_id": block.id,
-                "content": [{"type": "text", "text": json.dumps(result)}],
-            }],
-        })
+    if response.stop_reason != "tool_use":
+        break
+
+    # Echo the assistant turn, then answer every tool_use block in ONE user message.
+    messages.append({"role": "assistant", "content": response.content})
+    tool_results = []
+    for block in response.content:
+        if block.type == "tool_use" and block.name == "generate_media":
+            try:
+                result = generate_media(block.input)
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": [{"type": "text", "text": json.dumps(result)}],
+                })
+            except Exception as exc:
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "is_error": True,
+                    "content": [{"type": "text", "text": f"Generation failed: {exc}"}],
+                })
+    messages.append({"role": "user", "content": tool_results})
+
+final_text = next((b.text for b in response.content if b.type == "text"), "")
+print(final_text)
 ```
