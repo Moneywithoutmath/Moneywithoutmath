@@ -52,6 +52,12 @@
       <div><label>Duration (s)</label><input id="duration" type="number" value="5" min="1" max="30"></div>
       <div><label>Quality</label>
         <select id="quality"><option>draft</option><option>standard</option><option>high</option></select></div>
+      <div><label>Format</label>
+        <select id="aspect">
+          <option value="1280x720">16:9 · YouTube</option>
+          <option value="720x1280">9:16 · TikTok / Reels</option>
+          <option value="1080x1080">1:1 · Feed</option>
+        </select></div>
     </div>
     <button id="gen-btn" onclick="generate()">Render video</button>
     <div class="status" id="gen-status"></div>
@@ -66,6 +72,11 @@
       <div class="pack"><b>$79</b>500 credits<br><button onclick="buy('studio')">Studio</button></div>
     </div>
     <div class="status" id="buy-status"></div>
+  </div>
+
+  <div class="card">
+    <h3>Your library</h3>
+    <div class="packs" id="history"></div>
   </div>
 
   <div class="card">
@@ -123,20 +134,50 @@ async function signup() {
 
 async function generate() {
   $("gen-btn").disabled = true;
-  $("gen-status").textContent = "Rendering…";
+  $("gen-status").textContent = "Queued…";
   try {
+    const [w, h] = $("aspect").value.split("x").map(Number);
     const data = await api("/api/generate", {
       prompt: $("prompt").value,
       duration_seconds: +$("duration").value,
       quality: $("quality").value,
+      width: w, height: h,
     });
-    $("gen-status").textContent = `Done — cost ${data.cost_credits} credit(s).`;
-    $("player").src = data.download;
-    $("player").style.display = "block";
     refreshCredits();
+    while (true) {
+      await new Promise(r => setTimeout(r, 1500));
+      const res = await fetch(data.poll, { headers: { "X-Api-Key": apiKey } });
+      const job = await res.json();
+      if (job.status === "succeeded") {
+        $("gen-status").textContent = `Done — cost ${job.cost_credits} credit(s).`;
+        $("player").src = job.download;
+        $("player").style.display = "block";
+        break;
+      }
+      if (job.status === "failed") {
+        $("gen-status").textContent = "Error: " + job.error;
+        refreshCredits();
+        break;
+      }
+      $("gen-status").textContent = "Rendering… (" + job.status + ")";
+    }
+    loadHistory();
   } catch (e) { $("gen-status").textContent = "Error: " + e.message; }
   $("gen-btn").disabled = false;
 }
+
+async function loadHistory() {
+  if (!apiKey) return;
+  const res = await fetch("/api/history", { headers: { "X-Api-Key": apiKey } });
+  if (!res.ok) return;
+  const { jobs } = await res.json();
+  $("history").innerHTML = jobs.map(j =>
+    `<div class="pack" style="text-align:left">
+      <small style="color:var(--muted)">${j.status} · ${j.cost_credits} cr</small><br>
+      ${j.prompt.slice(0, 60)}${j.download ? `<br><a style="color:var(--accent)" href="${j.download}" target="_blank">▶ open</a>` : ""}
+    </div>`).join("") || '<span class="status">No renders yet.</span>';
+}
+loadHistory();
 
 async function buy(pack) {
   try {

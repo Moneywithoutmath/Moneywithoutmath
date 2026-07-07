@@ -57,6 +57,21 @@ classic prepaid ladder.
 - **Admin metrics** (`/api/admin/metrics`, `ADMIN_TOKEN` + `X-Admin-Token`) —
   accounts, renders, credits burned, revenue, paying customers.
 
+## Market-grade architecture
+
+- **Async job pipeline** — `POST /api/generate` returns `202` with a job id;
+  poll `GET /api/jobs/{id}`. Renders run on background workers
+  (`RENDER_WORKERS`, default 2); interrupted jobs are re-queued on restart;
+  failures auto-refund. This is the same UX contract Runway/Pika/Luma expose.
+- **Pluggable providers** (`app/providers.py`) — `RENDER_PROVIDER=local`
+  (ffmpeg dev renderer) or `replicate` (any text-to-video model on
+  replicate.com via `REPLICATE_API_TOKEN` + `REPLICATE_MODEL`). Adding
+  Runway/Luma/Pika is one class implementing `render(params, out_path)`.
+- **Social formats** — 16:9 YouTube, 9:16 TikTok/Reels, 1:1 feed presets in
+  the UI; arbitrary dimensions via API.
+- **Per-user library** — `GET /api/history` and an in-app gallery of past
+  renders with status and downloads.
+
 ## Going live checklist
 
 1. `pip install stripe`, set `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`,

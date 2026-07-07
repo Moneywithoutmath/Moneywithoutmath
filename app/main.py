@@ -18,9 +18,10 @@ Run:  uvicorn app.main:app --host 0.0.0.0 --port 8000
 """
 import json
 import os
+import queue
 import secrets
 import sqlite3
-import subprocess
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -28,6 +29,8 @@ from pathlib import Path
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
+
+from app.providers import ProviderError, get_provider
 
 ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = ROOT / "promptclip.db"
@@ -73,6 +76,10 @@ def db():
           id TEXT PRIMARY KEY, api_key TEXT, prompt TEXT, cost INTEGER,
           file TEXT, created REAL);
         CREATE TABLE IF NOT EXISTS signups_ip (ip TEXT, created REAL);
+        CREATE TABLE IF NOT EXISTS jobs (
+          id TEXT PRIMARY KEY, api_key TEXT, prompt TEXT, params TEXT,
+          cost INTEGER, status TEXT, file TEXT, error TEXT,
+          created REAL, updated REAL);
         CREATE TABLE IF NOT EXISTS payments (
           session_id TEXT PRIMARY KEY, api_key TEXT, credits INTEGER,
           usd INTEGER, created REAL);
@@ -152,14 +159,73 @@ def render_cost(body: GenerateIn) -> int:
     return blocks * QUALITY_MULTIPLIER[body.quality]
 
 
-def drawtext_escape(s: str) -> str:
-    # escape ffmpeg drawtext specials: backslash, quote, colon, percent
-    return (
-        s.replace("\\", r"\\").replace("'", r"\'").replace(":", r"\:").replace("%", r"\%")
-    )
+JOB_QUEUE: "queue.Queue[str]" = queue.Queue()
 
 
-@app.post("/api/generate")
+def job_worker():
+    provider = None
+    while True:
+        job_id = JOB_QUEUE.get()
+        conn = db()
+        try:
+            job = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if not job or job["status"] != "queued":
+                continue
+            conn.execute(
+                "UPDATE jobs SET status='processing', updated=? WHERE id=?",
+                (time.time(), job_id),
+            )
+            conn.commit()
+            params = json.loads(job["params"])
+            out_path = MEDIA_DIR / f"{job_id}.mp4"
+            try:
+                if provider is None:
+                    provider = get_provider()
+                provider.render(params, str(out_path))
+                conn.execute(
+                    "UPDATE jobs SET status='succeeded', file=?, updated=? WHERE id=?",
+                    (str(out_path), time.time(), job_id),
+                )
+                conn.execute(
+                    "INSERT INTO renders VALUES (?,?,?,?,?,?)",
+                    (job_id, job["api_key"], job["prompt"], job["cost"], str(out_path), time.time()),
+                )
+            except ProviderError as e:
+                provider = None  # re-resolve next time in case config changed
+                conn.execute(  # refund on failure
+                    "UPDATE accounts SET credits = credits + ? WHERE api_key=?",
+                    (job["cost"], job["api_key"]),
+                )
+                conn.execute(
+                    "UPDATE jobs SET status='failed', error=?, updated=? WHERE id=?",
+                    (str(e)[:300], time.time(), job_id),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+            JOB_QUEUE.task_done()
+
+
+WORKERS = int(os.environ.get("RENDER_WORKERS", "2"))
+for _ in range(WORKERS):
+    threading.Thread(target=job_worker, daemon=True).start()
+
+
+@app.on_event("startup")
+def requeue_stale_jobs():
+    conn = db()
+    try:
+        for row in conn.execute(
+            "SELECT id FROM jobs WHERE status IN ('queued','processing')"
+        ).fetchall():
+            conn.execute("UPDATE jobs SET status='queued' WHERE id=?", (row["id"],))
+            JOB_QUEUE.put(row["id"])
+        conn.commit()
+    finally:
+        conn.close()
+
+
+@app.post("/api/generate", status_code=202)
 def generate(body: GenerateIn, x_api_key: str | None = Header(default=None)):
     conn = db()
     try:
@@ -176,49 +242,65 @@ def generate(body: GenerateIn, x_api_key: str | None = Header(default=None)):
                 f"Insufficient credits (need {cost}, have {acct['credits']}). "
                 "Buy a pack via POST /api/checkout.",
             )
-        conn.commit()
-
-        render_id = uuid.uuid4().hex[:12]
-        out_path = MEDIA_DIR / f"{render_id}.mp4"
-        label = drawtext_escape(body.prompt[:120])
-        filters = [
-            f"drawtext=text='{label}':fontcolor=white:fontsize={max(16, body.width // 40)}:"
-            "x=(w-text_w)/2:y=(h-text_h)/2:box=1:boxcolor=black@0.4:boxborderw=12"
-        ]
         watermark_free = PLANS.get(acct["plan"] or "free", PLANS["free"])[2]
+        params = body.model_dump()
         if not watermark_free:  # watermark free-plan renders: shares become ads
-            filters.append(
-                f"drawtext=text='{drawtext_escape(WATERMARK)}':fontcolor=white@0.7:"
-                f"fontsize={max(12, body.width // 64)}:x=w-text_w-16:y=h-text_h-12"
-            )
-        proc = subprocess.run(
-            [
-                "ffmpeg", "-y", "-f", "lavfi",
-                "-i",
-                f"gradients=size={body.width}x{body.height}:duration={body.duration_seconds}"
-                f":speed=0.05:seed={body.seed}",
-                "-vf", ",".join(filters), "-t", str(body.duration_seconds),
-                "-c:v", "libx264", "-pix_fmt", "yuv420p", str(out_path),
-            ],
-            capture_output=True, text=True,
-        )
-        if proc.returncode != 0:
-            # refund on failure
-            conn.execute("UPDATE accounts SET credits = credits + ? WHERE api_key=?", (cost, x_api_key))
-            conn.commit()
-            raise HTTPException(500, "Render failed (credits refunded): " + proc.stderr[-300:])
-
+            params["watermark"] = WATERMARK
+        job_id = uuid.uuid4().hex[:12]
         conn.execute(
-            "INSERT INTO renders VALUES (?,?,?,?,?,?)",
-            (render_id, x_api_key, body.prompt, cost, str(out_path), time.time()),
+            "INSERT INTO jobs VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (job_id, x_api_key, body.prompt, json.dumps(params), cost,
+             "queued", None, None, time.time(), time.time()),
         )
         conn.commit()
+        JOB_QUEUE.put(job_id)
         return {
-            "status": "success",
-            "render_id": render_id,
+            "status": "queued",
+            "job_id": job_id,
             "cost_credits": cost,
-            "download": f"/media/{render_id}.mp4",
+            "poll": f"/api/jobs/{job_id}",
         }
+    finally:
+        conn.close()
+
+
+@app.get("/api/jobs/{job_id}")
+def job_status(job_id: str, x_api_key: str | None = Header(default=None)):
+    conn = db()
+    try:
+        account_for(conn, x_api_key)
+        job = conn.execute(
+            "SELECT * FROM jobs WHERE id=? AND api_key=?", (job_id, x_api_key)
+        ).fetchone()
+        if not job:
+            raise HTTPException(404, "No such job for this API key.")
+        out = {"job_id": job["id"], "status": job["status"], "cost_credits": job["cost"]}
+        if job["status"] == "succeeded":
+            out["download"] = f"/media/{job['id']}.mp4"
+        if job["status"] == "failed":
+            out["error"] = job["error"] + " (credits refunded)"
+        return out
+    finally:
+        conn.close()
+
+
+@app.get("/api/history")
+def history(x_api_key: str | None = Header(default=None)):
+    conn = db()
+    try:
+        account_for(conn, x_api_key)
+        rows = conn.execute(
+            "SELECT id, prompt, cost, status, created FROM jobs WHERE api_key=? "
+            "ORDER BY created DESC LIMIT 20",
+            (x_api_key,),
+        ).fetchall()
+        return {"jobs": [
+            {
+                "job_id": r["id"], "prompt": r["prompt"], "cost_credits": r["cost"],
+                "status": r["status"],
+                "download": f"/media/{r['id']}.mp4" if r["status"] == "succeeded" else None,
+            } for r in rows
+        ]}
     finally:
         conn.close()
 
