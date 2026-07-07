@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PromptClip — Revenue dashboard</title>
+<style>
+  .viz-root {
+    --surface-1:#fcfcfb; --page:#f9f9f7;
+    --ink-1:#0b0b0b; --ink-2:#52514e; --ink-muted:#898781;
+    --grid:#e1e0d9; --baseline:#c3c2b7; --border:rgba(11,11,11,.10);
+    --series-1:#2a78d6; --series-2:#1baf7a; --good:#006300;
+  }
+  @media (prefers-color-scheme: dark) {
+    .viz-root {
+      --surface-1:#1a1a19; --page:#0d0d0d;
+      --ink-1:#ffffff; --ink-2:#c3c2b7; --ink-muted:#898781;
+      --grid:#2c2c2a; --baseline:#383835; --border:rgba(255,255,255,.10);
+      --series-1:#3987e5; --series-2:#199e70; --good:#0ca30c;
+    }
+  }
+  * { box-sizing:border-box; margin:0; }
+  body { font-family:system-ui,-apple-system,"Segoe UI",sans-serif;
+    background:var(--page); color:var(--ink-1); }
+  .wrap { max-width:1000px; margin:0 auto; padding:32px 20px; }
+  h1 { font-size:1.5rem; margin-bottom:4px; }
+  .sub { color:var(--ink-2); font-size:.9rem; margin-bottom:24px; }
+  .tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr));
+    gap:12px; margin-bottom:20px; }
+  .tile { background:var(--surface-1); border:1px solid var(--border);
+    border-radius:12px; padding:16px; }
+  .tile .label { font-size:.78rem; color:var(--ink-muted); margin-bottom:6px; }
+  .tile .value { font-size:1.7rem; font-weight:650; }
+  .tile .value small { font-size:.9rem; color:var(--ink-2); font-weight:400; }
+  .cards { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  @media (max-width:760px){ .cards{grid-template-columns:1fr} }
+  .card { background:var(--surface-1); border:1px solid var(--border);
+    border-radius:12px; padding:18px; }
+  .card.wide { grid-column:1/-1; }
+  .card h3 { font-size:.95rem; margin-bottom:2px; }
+  .card .desc { font-size:.78rem; color:var(--ink-muted); margin-bottom:12px; }
+  .legend { display:flex; gap:16px; font-size:.78rem; color:var(--ink-2); margin-bottom:8px; }
+  .legend i { display:inline-block; width:10px; height:10px; border-radius:3px;
+    margin-right:5px; vertical-align:-1px; }
+  svg { width:100%; height:auto; display:block; overflow:visible; }
+  text { font-family:inherit; }
+  .axis { font-size:10px; fill:var(--ink-muted); }
+  .dlabel { font-size:10px; fill:var(--ink-2); }
+  .tt { position:fixed; pointer-events:none; background:var(--surface-1);
+    border:1px solid var(--border); border-radius:8px; padding:6px 10px;
+    font-size:.78rem; color:var(--ink-1); box-shadow:0 4px 14px rgba(0,0,0,.18);
+    display:none; z-index:9; }
+  .tt b { display:block; }
+  .auth { max-width:420px; margin:80px auto; text-align:center; }
+  .auth input { width:100%; padding:10px; border-radius:8px;
+    border:1px solid var(--border); background:var(--surface-1);
+    color:var(--ink-1); font:inherit; margin:12px 0; }
+</style>
+</head>
+<body class="viz-root">
+<div class="wrap" id="app"></div>
+<div class="tt" id="tt"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const css = v => getComputedStyle(document.body).getPropertyValue(v).trim();
+const fmt$ = n => "$" + n.toLocaleString();
+
+function tile(label, value) {
+  return `<div class="tile"><div class="label">${label}</div><div class="value">${value}</div></div>`;
+}
+
+// --- bar chart: single series, thin bars, rounded data-ends, hover tooltip ---
+function barChart(days, key, unit, color) {
+  const W = 460, H = 180, padL = 34, padB = 22, padT = 10;
+  const max = Math.max(1, ...days.map(d => d[key]));
+  const iw = (W - padL) / days.length, bw = Math.min(16, iw * 0.55);
+  const y = v => padT + (H - padB - padT) * (1 - v / max);
+  const ticks = [0, Math.round(max / 2), max];
+  let s = `<svg viewBox="0 0 ${W} ${H}">`;
+  for (const t of ticks) {
+    s += `<line x1="${padL}" x2="${W}" y1="${y(t)}" y2="${y(t)}" stroke="var(--grid)" stroke-width="1"/>`;
+    s += `<text class="axis" x="${padL - 6}" y="${y(t) + 3}" text-anchor="end">${t}</text>`;
+  }
+  days.forEach((d, i) => {
+    const x = padL + i * iw + (iw - bw) / 2, top = y(d[key]);
+    const h = Math.max(0, H - padB - top);
+    if (h > 0) s += `<path d="M${x},${H - padB} v${-(h - Math.min(4, h))}
+      q0,-${Math.min(4, h)} ${Math.min(4, bw / 2)},-${Math.min(4, h)} h${bw - 2 * Math.min(4, bw / 2)}
+      q${Math.min(4, bw / 2)},0 ${Math.min(4, bw / 2)},${Math.min(4, h)} v${h - Math.min(4, h)} z"
+      fill="${color}" data-tt="${d.day}|${d[key]}${unit}"/>`;
+    else s += `<rect x="${x}" y="${H - padB - 1}" width="${bw}" height="1" fill="var(--baseline)" data-tt="${d.day}|0${unit}"/>`;
+    if (i % 3 === 0) s += `<text class="axis" x="${x + bw / 2}" y="${H - 6}" text-anchor="middle">${d.day}</text>`;
+  });
+  s += `<line x1="${padL}" x2="${W}" y1="${H - padB}" y2="${H - padB}" stroke="var(--baseline)" stroke-width="1"/>`;
+  return s + "</svg>";
+}
+
+// --- two-series line chart with legend + end direct labels (relief rule) ---
+function lineChart(days, series) {
+  const W = 940, H = 200, padL = 34, padB = 22, padT = 12, padR = 64;
+  const max = Math.max(1, ...days.flatMap(d => series.map(s => d[s.key])));
+  const x = i => padL + i * (W - padL - padR) / (days.length - 1);
+  const y = v => padT + (H - padB - padT) * (1 - v / max);
+  let s = `<svg viewBox="0 0 ${W} ${H}">`;
+  for (const t of [0, Math.round(max / 2), max]) {
+    s += `<line x1="${padL}" x2="${W - padR}" y1="${y(t)}" y2="${y(t)}" stroke="var(--grid)"/>`;
+    s += `<text class="axis" x="${padL - 6}" y="${y(t) + 3}" text-anchor="end">${t}</text>`;
+  }
+  for (const sr of series) {
+    const pts = days.map((d, i) => `${x(i)},${y(d[sr.key])}`).join(" ");
+    s += `<polyline points="${pts}" fill="none" stroke="${sr.color}" stroke-width="2" stroke-linejoin="round"/>`;
+    const last = days[days.length - 1][sr.key];
+    s += `<text class="dlabel" x="${W - padR + 6}" y="${y(last) + 3}">${sr.name} ${last}</text>`;
+    days.forEach((d, i) => {
+      s += `<circle cx="${x(i)}" cy="${y(d[sr.key])}" r="8" fill="transparent"
+        data-tt="${d.day}|${sr.name}: ${d[sr.key]}"/>`;
+      s += `<circle cx="${x(i)}" cy="${y(d[sr.key])}" r="2.5" fill="${sr.color}" pointer-events="none"/>`;
+    });
+  }
+  days.forEach((d, i) => { if (i % 2 === 0)
+    s += `<text class="axis" x="${x(i)}" y="${H - 6}" text-anchor="middle">${d.day}</text>`; });
+  s += `<line x1="${padL}" x2="${W - padR}" y1="${H - padB}" y2="${H - padB}" stroke="var(--baseline)"/>`;
+  return s + "</svg>";
+}
+
+// --- horizontal bars for plan mix (magnitude per plan, one hue, direct labels) ---
+function planBars(mix) {
+  const plans = ["free", "pro", "business"];
+  const max = Math.max(1, ...plans.map(p => mix[p] || 0));
+  const W = 460, rowH = 34, padL = 70;
+  let s = `<svg viewBox="0 0 ${W} ${plans.length * rowH}">`;
+  plans.forEach((p, i) => {
+    const v = mix[p] || 0, w = Math.max(2, (W - padL - 60) * v / max), yy = i * rowH + 8;
+    s += `<text class="axis" x="${padL - 8}" y="${yy + 11}" text-anchor="end">${p}</text>`;
+    s += `<rect x="${padL}" y="${yy}" width="${w}" height="14" rx="4"
+      fill="var(--series-1)" data-tt="${p}|${v} accounts"/>`;
+    s += `<text class="dlabel" x="${padL + w + 6}" y="${yy + 11}">${v}</text>`;
+  });
+  return s + "</svg>";
+}
+
+function wireTooltips() {
+  const tt = $("tt");
+  document.querySelectorAll("[data-tt]").forEach(el => {
+    el.addEventListener("mousemove", e => {
+      const [a, b] = el.dataset.tt.split("|");
+      tt.innerHTML = `<b>${a}</b>${b}`;
+      tt.style.display = "block";
+      tt.style.left = (e.clientX + 12) + "px";
+      tt.style.top = (e.clientY + 12) + "px";
+    });
+    el.addEventListener("mouseleave", () => tt.style.display = "none");
+  });
+}
+
+async function load(token) {
+  const res = await fetch("/api/admin/summary", { headers: { "X-Admin-Token": token } });
+  if (!res.ok) { renderAuth("Invalid token."); return; }
+  localStorage.setItem("pc_admin", token);
+  const { tiles, plan_mix, days } = await res.json();
+  const c1 = css("--series-1"), c2 = css("--series-2");
+  $("app").innerHTML = `
+    <h1>PromptClip revenue dashboard</h1>
+    <p class="sub">Last 14 days · all monetization channels (packs, subscriptions, referrals)</p>
+    <div class="tiles">
+      ${tile("MRR", fmt$(tiles.mrr_usd) + "<small>/mo</small>")}
+      ${tile("Total revenue", fmt$(tiles.revenue_usd))}
+      ${tile("Paying customers", tiles.paying_customers)}
+      ${tile("Accounts", tiles.accounts)}
+      ${tile("Credits burned", tiles.credits_burned.toLocaleString())}
+    </div>
+    <div class="cards">
+      <div class="card"><h3>Revenue per day</h3>
+        <div class="desc">USD collected — packs and subscription invoices</div>
+        ${barChart(days, "revenue_usd", " USD", c1)}</div>
+      <div class="card"><h3>Plan mix</h3>
+        <div class="desc">Accounts per plan — upsell surface is the free bar</div>
+        ${planBars(plan_mix)}</div>
+      <div class="card wide"><h3>Usage &amp; growth</h3>
+        <div class="desc">Renders drive credit burn; signups feed the funnel</div>
+        <div class="legend"><span><i style="background:${c1}"></i>Renders</span>
+          <span><i style="background:${c2}"></i>Signups</span></div>
+        ${lineChart(days, [
+          { key: "renders", name: "Renders", color: c1 },
+          { key: "signups", name: "Signups", color: c2 },
+        ])}</div>
+    </div>`;
+  wireTooltips();
+}
+
+function renderAuth(msg) {
+  $("app").innerHTML = `<div class="auth"><h1>Admin dashboard</h1>
+    <p class="sub">${msg || "Enter the ADMIN_TOKEN to view metrics."}</p>
+    <input id="tok" type="password" placeholder="ADMIN_TOKEN">
+    <button onclick="load(document.getElementById('tok').value)"
+      style="padding:10px 22px;border:0;border-radius:8px;background:var(--series-1);color:#fff;font-weight:600;cursor:pointer">
+      View dashboard</button></div>`;
+}
+
+const saved = new URLSearchParams(location.search).get("token") || localStorage.getItem("pc_admin");
+saved ? load(saved) : renderAuth();
+</script>
+</body>
+</html>

@@ -43,6 +43,11 @@ CREDIT_PACKS = {  # pack id -> (credits, USD price)
     "creator": (100, 19),
     "studio": (500, 79),
 }
+PLANS = {  # plan id -> (USD/month, credits granted each billing cycle, watermark-free)
+    "free": (0, 0, False),
+    "pro": (29, 200, True),
+    "business": (99, 1000, True),
+}
 WATERMARK = os.environ.get("WATERMARK_TEXT", "made with promptclip")
 
 TEMPLATES = [
@@ -73,6 +78,10 @@ def db():
           usd INTEGER, created REAL);
         """
     )
+    try:
+        conn.execute("ALTER TABLE accounts ADD COLUMN plan TEXT DEFAULT 'free'")
+    except sqlite3.OperationalError:
+        pass  # column already exists
     return conn
 
 
@@ -176,7 +185,8 @@ def generate(body: GenerateIn, x_api_key: str | None = Header(default=None)):
             f"drawtext=text='{label}':fontcolor=white:fontsize={max(16, body.width // 40)}:"
             "x=(w-text_w)/2:y=(h-text_h)/2:box=1:boxcolor=black@0.4:boxborderw=12"
         ]
-        if body.quality == "draft":  # watermark free-tier renders: shares become ads
+        watermark_free = PLANS.get(acct["plan"] or "free", PLANS["free"])[2]
+        if not watermark_free:  # watermark free-plan renders: shares become ads
             filters.append(
                 f"drawtext=text='{drawtext_escape(WATERMARK)}':fontcolor=white@0.7:"
                 f"fontsize={max(12, body.width // 64)}:x=w-text_w-16:y=h-text_h-12"
@@ -235,6 +245,7 @@ def me(x_api_key: str | None = Header(default=None)):
             "email": acct["email"],
             "credits": acct["credits"],
             "referral_code": acct["referral_code"],
+            "plan": acct["plan"] or "free",
         }
     finally:
         conn.close()
@@ -299,6 +310,53 @@ def checkout(body: CheckoutIn, x_api_key: str | None = Header(default=None)):
     return {"status": "ok", "checkout_url": session.url}
 
 
+class SubscribeIn(BaseModel):
+    plan: str
+
+
+@app.post("/api/subscribe")
+def subscribe(body: SubscribeIn, x_api_key: str | None = Header(default=None)):
+    conn = db()
+    try:
+        account_for(conn, x_api_key)
+    finally:
+        conn.close()
+    if body.plan not in PLANS or body.plan == "free":
+        raise HTTPException(400, f"Choose one of {[p for p in PLANS if p != 'free']}.")
+    usd, credits, _ = PLANS[body.plan]
+    stripe_key = os.environ.get("STRIPE_SECRET_KEY")
+    if not stripe_key:
+        return {
+            "status": "setup_required",
+            "message": (
+                "Stripe is not configured. With STRIPE_SECRET_KEY set, this returns a "
+                "subscription-mode Checkout session; each invoice.paid webhook grants "
+                f"the plan's monthly credits ({credits}/mo for {body.plan})."
+            ),
+            "plan": {"id": body.plan, "usd_per_month": usd, "credits_per_month": credits},
+        }
+    import stripe
+
+    stripe.api_key = stripe_key
+    session = stripe.checkout.Session.create(
+        mode="subscription",
+        line_items=[{
+            "price_data": {
+                "currency": "usd",
+                "unit_amount": usd * 100,
+                "recurring": {"interval": "month"},
+                "product_data": {"name": f"PromptClip {body.plan} plan"},
+            },
+            "quantity": 1,
+        }],
+        metadata={"api_key": x_api_key, "plan": body.plan},
+        subscription_data={"metadata": {"api_key": x_api_key, "plan": body.plan}},
+        success_url=os.environ.get("CHECKOUT_SUCCESS_URL", "http://localhost:8000/?subscribed=1"),
+        cancel_url=os.environ.get("CHECKOUT_CANCEL_URL", "http://localhost:8000/"),
+    )
+    return {"status": "ok", "checkout_url": session.url}
+
+
 @app.post("/api/stripe/webhook")
 async def stripe_webhook(request: Request):
     payload = await request.body()
@@ -317,6 +375,32 @@ async def stripe_webhook(request: Request):
         # Dev mode only. NEVER run in production without STRIPE_WEBHOOK_SECRET —
         # an unverified webhook endpoint mints unlimited free credits.
         event = json.loads(payload)
+
+    if event.get("type") == "invoice.paid":
+        # recurring subscription cycle: grant the plan's monthly credits
+        obj = event["data"]["object"]
+        meta = obj.get("subscription_details", {}).get("metadata", {}) or obj.get("metadata", {})
+        api_key, plan = meta.get("api_key"), meta.get("plan")
+        invoice_id = obj.get("id", "")
+        if api_key and plan in PLANS and invoice_id:
+            usd, credits, _ = PLANS[plan]
+            conn = db()
+            try:
+                try:
+                    conn.execute(
+                        "INSERT INTO payments VALUES (?,?,?,?,?)",
+                        (invoice_id, api_key, credits, usd, time.time()),
+                    )
+                except sqlite3.IntegrityError:
+                    return {"received": True, "duplicate": True}
+                conn.execute(
+                    "UPDATE accounts SET credits = credits + ?, plan = ? WHERE api_key=?",
+                    (credits, plan, api_key),
+                )
+                grant_referral_bonus(conn, api_key)
+                conn.commit()
+            finally:
+                conn.close()
 
     if event.get("type") == "checkout.session.completed":
         obj = event["data"]["object"]
@@ -372,6 +456,60 @@ def admin_metrics(x_admin_token: str | None = Header(default=None)):
         }
     finally:
         conn.close()
+
+
+@app.get("/api/admin/summary")
+def admin_summary(x_admin_token: str | None = Header(default=None)):
+    admin_token = os.environ.get("ADMIN_TOKEN")
+    if not admin_token or x_admin_token != admin_token:
+        raise HTTPException(403, "Set ADMIN_TOKEN and pass it in X-Admin-Token.")
+    conn = db()
+    try:
+        now = time.time()
+        days = []
+        for i in range(13, -1, -1):
+            start = now - (i + 1) * 86400
+            end = now - i * 86400
+            days.append({
+                "day": time.strftime("%b %d", time.gmtime(end)),
+                "revenue_usd": conn.execute(
+                    "SELECT COALESCE(SUM(usd),0) s FROM payments WHERE created>=? AND created<?",
+                    (start, end)).fetchone()["s"],
+                "renders": conn.execute(
+                    "SELECT COUNT(*) c FROM renders WHERE created>=? AND created<?",
+                    (start, end)).fetchone()["c"],
+                "signups": conn.execute(
+                    "SELECT COUNT(*) c FROM accounts WHERE created>=? AND created<?",
+                    (start, end)).fetchone()["c"],
+            })
+        plan_mix = {
+            row["plan"] or "free": row["c"]
+            for row in conn.execute(
+                "SELECT plan, COUNT(*) c FROM accounts GROUP BY plan"
+            ).fetchall()
+        }
+        mrr = sum(PLANS[p][0] * n for p, n in plan_mix.items() if p in PLANS)
+        return {
+            "tiles": {
+                "mrr_usd": mrr,
+                "revenue_usd": conn.execute(
+                    "SELECT COALESCE(SUM(usd),0) s FROM payments").fetchone()["s"],
+                "paying_customers": conn.execute(
+                    "SELECT COUNT(DISTINCT api_key) c FROM payments").fetchone()["c"],
+                "accounts": conn.execute("SELECT COUNT(*) c FROM accounts").fetchone()["c"],
+                "credits_burned": conn.execute(
+                    "SELECT COALESCE(SUM(cost),0) s FROM renders").fetchone()["s"],
+            },
+            "plan_mix": plan_mix,
+            "days": days,
+        }
+    finally:
+        conn.close()
+
+
+@app.get("/admin", response_class=HTMLResponse)
+def admin_page():
+    return (ROOT / "app" / "dashboard.html").read_text()
 
 
 @app.get("/", response_class=HTMLResponse)
