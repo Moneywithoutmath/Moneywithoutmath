@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PromptClip — turn prompts into videos</title>
+<style>
+  :root { --accent:#6c5ce7; --bg:#0f0f14; --card:#1a1a24; --text:#eceaf6; --muted:#9a96b0; }
+  * { box-sizing:border-box; margin:0; }
+  body { font-family:system-ui,sans-serif; background:var(--bg); color:var(--text); }
+  .wrap { max-width:860px; margin:0 auto; padding:48px 20px; }
+  h1 { font-size:2.4rem; margin-bottom:8px; }
+  h1 span { color:var(--accent); }
+  .sub { color:var(--muted); margin-bottom:32px; }
+  .card { background:var(--card); border-radius:14px; padding:24px; margin-bottom:20px; }
+  label { display:block; font-size:.85rem; color:var(--muted); margin:12px 0 4px; }
+  input, textarea, select { width:100%; padding:10px; border-radius:8px; border:1px solid #333;
+    background:#12121a; color:var(--text); font:inherit; }
+  button { margin-top:16px; padding:12px 24px; border:0; border-radius:8px;
+    background:var(--accent); color:#fff; font-weight:600; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:wait; }
+  .row { display:flex; gap:12px; flex-wrap:wrap; } .row > div { flex:1; min-width:120px; }
+  .packs { display:flex; gap:12px; flex-wrap:wrap; }
+  .pack { flex:1; min-width:150px; background:#12121a; border:1px solid #333; border-radius:10px;
+    padding:16px; text-align:center; }
+  .pack b { font-size:1.4rem; display:block; }
+  video { width:100%; border-radius:10px; margin-top:16px; }
+  .status { margin-top:12px; color:var(--muted); font-size:.9rem; white-space:pre-wrap; }
+  .credits { float:right; color:var(--accent); font-weight:600; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Prompt<span>Clip</span></h1>
+  <p class="sub">Type a prompt. Get a video. Pay only for what you render — 3 free credits to start.</p>
+
+  <div class="card" id="signup-card">
+    <h3>1 · Get your API key <span class="credits" id="credits"></span></h3>
+    <label>Email</label>
+    <input id="email" type="email" placeholder="you@example.com">
+    <button onclick="signup()">Get free credits</button>
+    <div class="status" id="signup-status"></div>
+  </div>
+
+  <div class="card">
+    <h3>2 · Generate</h3>
+    <label>Prompt</label>
+    <textarea id="prompt" rows="2" placeholder="slow pan across a neon-lit city skyline at night, rain"></textarea>
+    <div class="row">
+      <div><label>Duration (s)</label><input id="duration" type="number" value="5" min="1" max="30"></div>
+      <div><label>Quality</label>
+        <select id="quality"><option>draft</option><option>standard</option><option>high</option></select></div>
+    </div>
+    <button id="gen-btn" onclick="generate()">Render video</button>
+    <div class="status" id="gen-status"></div>
+    <video id="player" controls style="display:none"></video>
+  </div>
+
+  <div class="card">
+    <h3>3 · Top up credits</h3>
+    <div class="packs">
+      <div class="pack"><b>$5</b>20 credits<br><button onclick="buy('starter')">Starter</button></div>
+      <div class="pack"><b>$19</b>100 credits<br><button onclick="buy('creator')">Creator</button></div>
+      <div class="pack"><b>$79</b>500 credits<br><button onclick="buy('studio')">Studio</button></div>
+    </div>
+    <div class="status" id="buy-status"></div>
+  </div>
+</div>
+
+<script>
+let apiKey = localStorage.getItem("pc_key") || "";
+const $ = id => document.getElementById(id);
+
+async function api(path, body) {
+  const res = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Api-Key": apiKey },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.detail || res.statusText);
+  return data;
+}
+
+async function refreshCredits() {
+  if (!apiKey) return;
+  const res = await fetch("/api/me", { headers: { "X-Api-Key": apiKey } });
+  if (res.ok) {
+    const me = await res.json();
+    $("credits").textContent = me.credits + " credits";
+    $("signup-status").textContent = "Signed in as " + me.email;
+  }
+}
+
+async function signup() {
+  try {
+    const data = await api("/api/signup", { email: $("email").value });
+    apiKey = data.api_key;
+    localStorage.setItem("pc_key", apiKey);
+    $("signup-status").textContent = "API key saved in this browser: " + apiKey;
+    refreshCredits();
+  } catch (e) { $("signup-status").textContent = "Error: " + e.message; }
+}
+
+async function generate() {
+  $("gen-btn").disabled = true;
+  $("gen-status").textContent = "Rendering…";
+  try {
+    const data = await api("/api/generate", {
+      prompt: $("prompt").value,
+      duration_seconds: +$("duration").value,
+      quality: $("quality").value,
+    });
+    $("gen-status").textContent = `Done — cost ${data.cost_credits} credit(s).`;
+    $("player").src = data.download;
+    $("player").style.display = "block";
+    refreshCredits();
+  } catch (e) { $("gen-status").textContent = "Error: " + e.message; }
+  $("gen-btn").disabled = false;
+}
+
+async function buy(pack) {
+  try {
+    const data = await api("/api/checkout", { pack });
+    if (data.checkout_url) location.href = data.checkout_url;
+    else $("buy-status").textContent = data.message;
+  } catch (e) { $("buy-status").textContent = "Error: " + e.message; }
+}
+
+refreshCredits();
+</script>
+</body>
+</html>

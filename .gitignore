@@ -1,1 +1,4 @@
 out/
+media/
+promptclip.db
+__pycache__/
