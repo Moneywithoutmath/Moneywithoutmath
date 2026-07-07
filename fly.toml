@@ -1,0 +1,27 @@
+# fly.io deploy config — `fly launch --copy-config && fly deploy`
+app = "promptclip"
+primary_region = "iad"
+
+[build]
+
+[env]
+  RENDER_PROVIDER = "local"   # switch to "replicate" + set secrets to go AI
+  RENDER_WORKERS = "2"
+
+[[mounts]]
+  source = "promptclip_data"
+  destination = "/srv/data"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = false
+
+[[http_service.checks]]
+  path = "/healthz"
+  interval = "30s"
+  timeout = "5s"
+
+# secrets to set before first deploy:
+#   fly secrets set ADMIN_TOKEN=... STRIPE_SECRET_KEY=... STRIPE_WEBHOOK_SECRET=...
+#   fly secrets set REPLICATE_API_TOKEN=... REPLICATE_MODEL=owner/name:version

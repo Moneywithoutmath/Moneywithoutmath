@@ -33,8 +33,8 @@ from pydantic import BaseModel, Field
 from app.providers import ProviderError, get_provider
 
 ROOT = Path(__file__).resolve().parent.parent
-DB_PATH = ROOT / "promptclip.db"
-MEDIA_DIR = ROOT / "media"
+DB_PATH = Path(os.environ.get("DB_PATH", ROOT / "promptclip.db"))
+MEDIA_DIR = Path(os.environ.get("MEDIA_DIR", ROOT / "media"))
 MEDIA_DIR.mkdir(exist_ok=True)
 
 FREE_CREDITS = 3
@@ -62,10 +62,33 @@ TEMPLATES = [
 
 app = FastAPI(title="PromptClip", version="2.0.0")
 
+if os.environ.get("CORS_ORIGINS"):  # comma-separated origins for browser API clients
+    from fastapi.middleware.cors import CORSMiddleware
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=os.environ["CORS_ORIGINS"].split(","),
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+
+def check_admin(x_admin_token: str | None):
+    admin_token = os.environ.get("ADMIN_TOKEN")
+    if not admin_token or not secrets.compare_digest(x_admin_token or "", admin_token):
+        raise HTTPException(403, "Set ADMIN_TOKEN and pass it in X-Admin-Token.")
+
+
+@app.get("/healthz")
+def healthz():
+    return {"ok": True}
+
 
 def db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=15)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")  # readers don't block writers
+    conn.execute("PRAGMA busy_timeout=15000")
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS accounts (
@@ -211,7 +234,6 @@ for _ in range(WORKERS):
     threading.Thread(target=job_worker, daemon=True).start()
 
 
-@app.on_event("startup")
 def requeue_stale_jobs():
     conn = db()
     try:
@@ -223,6 +245,9 @@ def requeue_stale_jobs():
         conn.commit()
     finally:
         conn.close()
+
+
+app.router.on_startup.append(requeue_stale_jobs)
 
 
 @app.post("/api/generate", status_code=202)
@@ -514,9 +539,7 @@ async def stripe_webhook(request: Request):
 
 @app.get("/api/admin/metrics")
 def admin_metrics(x_admin_token: str | None = Header(default=None)):
-    admin_token = os.environ.get("ADMIN_TOKEN")
-    if not admin_token or x_admin_token != admin_token:
-        raise HTTPException(403, "Set ADMIN_TOKEN and pass it in X-Admin-Token.")
+    check_admin(x_admin_token)
     conn = db()
     try:
         day_ago = time.time() - 86400
@@ -542,9 +565,7 @@ def admin_metrics(x_admin_token: str | None = Header(default=None)):
 
 @app.get("/api/admin/summary")
 def admin_summary(x_admin_token: str | None = Header(default=None)):
-    admin_token = os.environ.get("ADMIN_TOKEN")
-    if not admin_token or x_admin_token != admin_token:
-        raise HTTPException(403, "Set ADMIN_TOKEN and pass it in X-Admin-Token.")
+    check_admin(x_admin_token)
     conn = db()
     try:
         now = time.time()
