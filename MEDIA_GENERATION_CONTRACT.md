@@ -81,6 +81,56 @@ retry with adjusted parameters:
 | `duration_seconds` | number | Present for video/audio assets.            |
 | `seed`     | int    | Seed actually used, for reproducibility.             |
 
+## Video generation example
+
+A `tool_use` request for video sets `media_type: "video"`, a video-compatible
+`format` (`mp4` or `webm`), and uses `duration_seconds` alongside
+`width`/`height`:
+
+```json
+{
+  "type": "tool_use",
+  "id": "toolu_01XYZ...",
+  "name": "generate_media",
+  "input": {
+    "media_type": "video",
+    "prompt": "slow pan across a neon-lit city skyline at night, rain",
+    "format": "mp4",
+    "width": 1280,
+    "height": 720,
+    "duration_seconds": 6,
+    "quality": "standard",
+    "seed": 42
+  }
+}
+```
+
+The corresponding successful `tool_result`:
+
+```json
+{
+  "type": "tool_result",
+  "tool_use_id": "toolu_01XYZ...",
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"status\":\"success\",\"assets\":[{\"url\":\"out/generated.mp4\",\"format\":\"mp4\",\"width\":1280,\"height\":720,\"duration_seconds\":6,\"seed\":42}]}"
+    }
+  ]
+}
+```
+
+A runnable reference executor lives at
+[`examples/generate_video.py`](examples/generate_video.py). It consumes the
+tool input JSON and produces the `tool_result` payload, rendering the video
+locally with ffmpeg (a stand-in for a real generation service, useful for
+exercising the full loop without API credentials):
+
+```bash
+echo '{"media_type":"video","prompt":"neon city skyline","format":"mp4","width":1280,"height":720,"duration_seconds":6,"seed":42}' \
+  | python3 examples/generate_video.py
+```
+
 ## End-to-end example (Python)
 
 ```python
