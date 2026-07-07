@@ -1,7 +1,30 @@
 # Media Generation Contract
 
+**Version 1.1.0**
+
 A Claude-native tool contract for requesting image, video, or audio generation
 through Anthropic's tool-calling (`tool_use`) format.
+
+## Versioning
+
+The contract follows semantic versioning:
+
+- **Patch** — wording/documentation changes; no wire impact.
+- **Minor** — additive, backward-compatible changes: new optional request
+  fields, new optional response fields (such as `usage`), new error codes.
+- **Major** — breaking changes: removed/renamed fields, changed types,
+  new required fields.
+
+Compatibility rules for implementers: executors MUST ignore request fields
+they don't recognize, clients MUST tolerate extra fields in responses, and
+clients receiving an unknown error `code` SHOULD treat it like
+`provider_error`. This lets executors and clients upgrade independently
+within a major version.
+
+| Version | Changes |
+| ------- | -------- |
+| 1.0.0   | Initial contract: `generate_media` tool, asset response, `is_error` results. |
+| 1.1.0   | Optional `usage` object on success; structured error payloads with standard codes (`quota_exceeded` + `upgrade_url`, etc.). |
 
 ## Files
 
