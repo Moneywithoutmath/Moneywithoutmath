@@ -40,27 +40,38 @@ Pricing engine: **1 credit per started 5 s block × quality multiplier**
 gross margin rises with pack size while the per-credit price falls, the
 classic prepaid ladder.
 
+## Built-in revenue protection & growth
+
+- **Atomic credit debit** — no double-spend under concurrent requests; failed
+  renders auto-refund.
+- **Signup abuse controls** — one account per email, 3 signups/IP/hour cap
+  (free-credit farming blocked).
+- **Stripe webhook hardening** — signature verification via
+  `STRIPE_WEBHOOK_SECRET` plus idempotency (replayed events credit nothing).
+- **Watermarked free-tier renders** (`WATERMARK_TEXT`) — every shared draft
+  video is an ad.
+- **Referral program** — +3 credits to both sides when a referred user makes
+  their first purchase (paid-gated so it can't be farmed).
+- **Template gallery** (`/api/templates`) — lowers the blank-page barrier,
+  raises render volume.
+- **Admin metrics** (`/api/admin/metrics`, `ADMIN_TOKEN` + `X-Admin-Token`) —
+  accounts, renders, credits burned, revenue, paying customers.
+
 ## Going live checklist
 
-1. `pip install stripe`, set `STRIPE_SECRET_KEY`, `CHECKOUT_SUCCESS_URL`,
-   `CHECKOUT_CANCEL_URL`; point a Stripe webhook at `/api/stripe/webhook`
-   (add signature verification with `STRIPE_WEBHOOK_SECRET`).
+1. `pip install stripe`, set `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`,
+   `CHECKOUT_SUCCESS_URL`, `CHECKOUT_CANCEL_URL`; point a Stripe webhook at
+   `/api/stripe/webhook`. **Never run in production without the webhook
+   secret** — an unverified endpoint mints unlimited credits.
 2. Swap the ffmpeg placeholder renderer in `app/main.py::generate` for a real
    text-to-video provider (Runway, Luma, Pika, Replicate…). The
    [contract](MEDIA_GENERATION_CONTRACT.md) already defines the interface —
    cost per credit should stay above provider cost per render.
 3. Put it behind HTTPS (any PaaS: Fly.io, Railway, Render) with a volume for
-   `promptclip.db` and `media/`.
-4. Rate-limit `/api/signup` per IP (free-credit farming) and add email
-   verification before scaling paid traffic.
-
-## Growth levers (in order of ROI)
-
-1. **Watermark free-tier renders** with your URL — every shared video is an ad.
-2. **Referral credits** (+3 for both sides) — cost is marginal, growth is viral.
-3. **API reseller tier** — bulk credits at discount for apps embedding you.
-4. **Templates gallery** — prompt presets that lower the blank-page barrier and
-   raise render volume (each preset click is a credit sale opportunity).
+   `promptclip.db` and `media/`. Move renders to a background queue (e.g. an
+   RQ/Celery worker) once a real provider makes them slower than ~10 s.
+4. Set `ADMIN_TOKEN` and `WATERMARK_TEXT` to your domain.
+5. At scale: migrate SQLite → Postgres, media → S3/CDN, add email verification.
 
 ## Repository layout
 

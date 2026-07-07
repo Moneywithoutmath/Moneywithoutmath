@@ -44,6 +44,8 @@
 
   <div class="card">
     <h3>2 · Generate</h3>
+    <label>Templates</label>
+    <div class="packs" id="templates"></div>
     <label>Prompt</label>
     <textarea id="prompt" rows="2" placeholder="slow pan across a neon-lit city skyline at night, rain"></textarea>
     <div class="row">
@@ -64,6 +66,12 @@
       <div class="pack"><b>$79</b>500 credits<br><button onclick="buy('studio')">Studio</button></div>
     </div>
     <div class="status" id="buy-status"></div>
+  </div>
+
+  <div class="card">
+    <h3>4 · Earn free credits</h3>
+    <p class="sub">Share your referral code — you both get +3 credits when a friend makes their first purchase.</p>
+    <div class="status" id="referral"></div>
   </div>
 </div>
 
@@ -89,8 +97,19 @@ async function refreshCredits() {
     const me = await res.json();
     $("credits").textContent = me.credits + " credits";
     $("signup-status").textContent = "Signed in as " + me.email;
+    $("referral").textContent = "Your code: " + me.referral_code +
+      " — friends sign up with it via /api/signup {referral_code}";
   }
 }
+
+async function loadTemplates() {
+  const res = await fetch("/api/templates");
+  const { templates } = await res.json();
+  $("templates").innerHTML = templates.map(t =>
+    `<div class="pack" style="cursor:pointer" onclick="document.getElementById('prompt').value=${JSON.stringify(t.prompt).replace(/"/g, '&quot;')}">${t.name}</div>`
+  ).join("");
+}
+loadTemplates();
 
 async function signup() {
   try {
