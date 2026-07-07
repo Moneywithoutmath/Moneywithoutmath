@@ -1,0 +1,16 @@
+# Fly.io config for the media generation adapter.
+# Deploy from this directory: fly launch --copy-config --no-deploy && fly deploy
+app = "media-generation-adapter"
+primary_region = "iad"
+
+[http_service]
+  internal_port = 8787
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  # Keep one machine warm so generation requests don't pay cold-start latency.
+  min_machines_running = 1
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
